@@ -1,3 +1,6 @@
+mod native;
+use native::{GetThreadContext, CONTEXT};
+
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::env::current_dir;
@@ -117,11 +120,7 @@ fn main() {
             //println!("Recv: {:?}, code={}", event.dwProcessId, event.dwDebugEventCode);
 
             let process = OpenProcess(PROCESS_ALL_ACCESS, FALSE, event.dwProcessId);
-            let thread = OpenThread(
-                THREAD_ALL_ACCESS | THREAD_GET_CONTEXT,
-                FALSE,
-                event.dwThreadId,
-            );
+            let thread = OpenThread(THREAD_ALL_ACCESS, FALSE, event.dwThreadId);
 
             if process.is_null() {
                 panic!("unable to get handle of process {}", event.dwProcessId);
@@ -355,63 +354,4 @@ fn wrap<F: FnOnce() -> i32>(f: F) -> io::Result<()> {
     } else {
         Ok(())
     }
-}
-
-type DWORD64 = u64;
-
-#[repr(C)]
-#[repr(align(16))]
-#[derive(Default, Clone)]
-struct CONTEXT {
-    P1Home: DWORD64,
-    P2Home: DWORD64,
-    P3Home: DWORD64,
-    P4Home: DWORD64,
-    P5Home: DWORD64,
-    P6Home: DWORD64,
-    ContextFlags: DWORD,
-    MxCsr: DWORD,
-    SegCs: WORD,
-    SegDs: WORD,
-    SegEs: WORD,
-    SegFs: WORD,
-    SegGs: WORD,
-    SegSs: WORD,
-    EFlags: DWORD,
-    Dr0: DWORD64,
-    Dr1: DWORD64,
-    Dr2: DWORD64,
-    Dr3: DWORD64,
-    Dr6: DWORD64,
-    Dr7: DWORD64,
-    Rax: DWORD64,
-    Rcx: DWORD64,
-    Rdx: DWORD64,
-    Rbx: DWORD64,
-    Rsp: DWORD64,
-    Rbp: DWORD64,
-    Rsi: DWORD64,
-    Rdi: DWORD64,
-    R8: DWORD64,
-    R9: DWORD64,
-    R10: DWORD64,
-    R11: DWORD64,
-    R12: DWORD64,
-    R13: DWORD64,
-    R14: DWORD64,
-    R15: DWORD64,
-    Rip: DWORD64,
-    u: CONTEXT_u,
-    VectorRegister: [M128A; 26],
-    VectorControl: DWORD64,
-    DebugControl: DWORD64,
-    LastBranchToRip: DWORD64,
-    LastBranchFromRip: DWORD64,
-    LastExceptionToRip: DWORD64,
-    LastExceptionFromRip: DWORD64,
-}
-
-type LPCONTEXT = *mut CONTEXT;
-extern "C" {
-    fn GetThreadContext(hThread: HANDLE, lpContext: LPCONTEXT) -> BOOL;
 }
