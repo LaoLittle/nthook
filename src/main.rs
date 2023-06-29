@@ -107,7 +107,7 @@ fn main() {
         })
         .unwrap();
 
-        let mut break_table: HashMap<usize, unsafe fn(DebugInfo) -> DWORD> = HashMap::new();
+        let mut break_table = HashMap::<usize, unsafe fn(DebugInfo) -> DWORD>::new();
 
         'main_loop: loop {
             let mut event = Default::default();
