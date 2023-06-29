@@ -140,20 +140,6 @@ fn main() {
 
                         match info.ExceptionRecord.ExceptionCode {
                             EXCEPTION_BREAKPOINT => {
-                                let mut buf = 0u8;
-                                let mut read = 0;
-
-                                wrap(|| {
-                                    ReadProcessMemory(
-                                        process,
-                                        info.ExceptionRecord.ExceptionAddress,
-                                        (&mut buf) as *mut u8 as _,
-                                        1,
-                                        &mut read,
-                                    )
-                                })
-                                .unwrap();
-
                                 println!(
                                     "[NTHook][PID: {}][TID: {}][Address: {:p}] Breakpoint",
                                     event.dwProcessId,
