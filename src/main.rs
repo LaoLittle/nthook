@@ -1,47 +1,33 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::env::current_dir;
-use std::ffi::{c_ushort, CStr};
-use std::fs::read_dir;
+use std::ffi::CStr;
+
 use std::io::Write;
-use std::mem::{size_of, size_of_val, MaybeUninit};
-use std::path::{Path, PathBuf};
+use std::mem::{size_of, size_of_val};
+use std::path::Path;
 use std::ptr::{null, null_mut};
-use std::{fs, io, mem};
+use std::{fs, io};
 use termcolor::{ColorChoice, ColorSpec, StandardStream, WriteColor};
-use winapi::shared::minwindef::{BOOL, DWORD, FALSE, MAX_PATH, TRUE, WORD};
+use winapi::shared::minwindef::{BOOL, DWORD, FALSE, MAX_PATH, WORD};
 use winapi::um::debugapi::{ContinueDebugEvent, WaitForDebugEvent};
-use winapi::um::fileapi::GetFileSize;
+
 use winapi::um::handleapi::CloseHandle;
-use winapi::um::libloaderapi::GetModuleFileNameW;
-use winapi::um::memoryapi::{
-    CreateFileMappingW, MapViewOfFile, ReadProcessMemory, VirtualProtect, VirtualProtectEx,
-    WriteProcessMemory, FILE_MAP_READ,
-};
+
+use winapi::um::memoryapi::{ReadProcessMemory, WriteProcessMemory};
 use winapi::um::minwinbase::{
-    CREATE_PROCESS_DEBUG_EVENT, DEBUG_EVENT, EXCEPTION_BREAKPOINT, EXCEPTION_DEBUG_EVENT,
-    EXCEPTION_DEBUG_INFO, EXIT_PROCESS_DEBUG_EVENT, LOAD_DLL_DEBUG_EVENT,
+    CREATE_PROCESS_DEBUG_EVENT, EXCEPTION_BREAKPOINT, EXCEPTION_DEBUG_EVENT, EXCEPTION_DEBUG_INFO,
+    EXIT_PROCESS_DEBUG_EVENT, LOAD_DLL_DEBUG_EVENT,
 };
-use winapi::um::processthreadsapi::{
-    CreateProcessW, GetProcessId, OpenProcess, OpenThread, ResumeThread, SuspendThread,
-    STARTUPINFOW,
-};
+use winapi::um::processthreadsapi::{CreateProcessW, GetProcessId, OpenProcess, OpenThread};
 use winapi::um::psapi::GetMappedFileNameW;
-use winapi::um::synchapi::WaitForSingleObject;
-use winapi::um::winbase::{
-    lstrlenW, CreateFileMappingA, CREATE_NEW_CONSOLE, CREATE_SUSPENDED, DEBUG_ONLY_THIS_PROCESS,
-    DEBUG_PROCESS, INFINITE,
-};
+
+use winapi::um::winbase::{lstrlenW, DEBUG_PROCESS, INFINITE};
 use winapi::um::wincon::SetConsoleOutputCP;
+use winapi::um::winnt::{CONTEXT_u, CONTEXT_FULL, DBG_EXCEPTION_NOT_HANDLED, M128A};
 use winapi::um::winnt::{
-    CONTEXT_u, CONTEXT_ALL, CONTEXT_DEBUG_REGISTERS, CONTEXT_FULL, DBG_EXCEPTION_NOT_HANDLED, M128A,
-};
-use winapi::um::winnt::{
-    DBG_CONTINUE, DBG_CONTROL_BREAK, DBG_CONTROL_C, DBG_EXCEPTION_HANDLED, HANDLE,
-    IMAGE_DIRECTORY_ENTRY_EXPORT, IMAGE_DOS_HEADER, IMAGE_EXPORT_DIRECTORY, IMAGE_NT_HEADERS,
-    PAGE_EXECUTE_READWRITE, PAGE_READONLY, PROCESS_ALL_ACCESS, PROCESS_QUERY_INFORMATION,
-    THREAD_ALL_ACCESS, THREAD_GET_CONTEXT, THREAD_QUERY_INFORMATION, THREAD_SET_CONTEXT,
-    THREAD_SUSPEND_RESUME,
+    DBG_CONTINUE, DBG_EXCEPTION_HANDLED, HANDLE, PROCESS_ALL_ACCESS, THREAD_ALL_ACCESS,
+    THREAD_GET_CONTEXT,
 };
 
 const WELCOME_INFO: &str = include_str!("../resources/welcome_info");
