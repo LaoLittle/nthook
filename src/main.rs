@@ -156,7 +156,7 @@ fn main() {
                                 .unwrap();
 
                                 println!(
-                                    "[PID: {}][TID: {}][Address: {:p}] Breakpoint",
+                                    "[NTHook][PID: {}][TID: {}][Address: {:p}] Breakpoint",
                                     event.dwProcessId,
                                     event.dwThreadId,
                                     info.ExceptionRecord.ExceptionAddress
@@ -228,7 +228,7 @@ fn main() {
                                 let [byte] = buf_byte;
 
                                 if byte == 0x90 {
-                                    println!("set breakpoint {:p} in wrapper.node", addr);
+                                    println!("[NTHook] set breakpoint {:p} in wrapper.node", addr);
 
                                     break_table.insert(addr as usize, get_log);
 
