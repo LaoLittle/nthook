@@ -7,10 +7,11 @@ use std::env::current_dir;
 use std::ffi::CStr;
 
 use std::io::Write;
-use std::mem::{size_of, size_of_val};
+use std::mem::{size_of, size_of_val, MaybeUninit};
 use std::path::Path;
 use std::ptr::{null, null_mut};
-use std::{fs, io};
+use std::sync::mpsc;
+use std::{fs, io, thread};
 use termcolor::{ColorChoice, ColorSpec, StandardStream, WriteColor};
 use winapi::shared::minwindef::{DWORD, FALSE, MAX_PATH};
 use winapi::um::debugapi::{ContinueDebugEvent, WaitForDebugEvent};
@@ -32,10 +33,24 @@ use winapi::um::winnt::{
     DBG_CONTINUE, DBG_EXCEPTION_HANDLED, HANDLE, PROCESS_ALL_ACCESS, THREAD_ALL_ACCESS,
 };
 
+macro_rules! log {
+    () => {
+        $crate::log!("")
+    };
+    ($($arg:tt)*) => {{
+        use std::fmt::Write;
+
+        #[allow(unused_unsafe)]
+        unsafe {
+            let mut s = String::new();
+            writeln!(s, $($arg)*).unwrap();
+            $crate::SENDER.assume_init_ref().send(Event::Log(s)).unwrap();
+        }
+    }};
+}
+
 const WELCOME_INFO: &str = include_str!("../resources/welcome_info");
 const MAX_PATH_BUF_SIZE: usize = MAX_PATH + 1;
-
-const OFFSET: isize = 0x22b5f6f;
 
 #[repr(C)]
 struct DebugInfo {
@@ -44,17 +59,34 @@ struct DebugInfo {
     thread: HANDLE,
 }
 
-fn main() {
-    let mut stdout = StandardStream::stdout(ColorChoice::Auto);
-    stdout
-        .set_color(&ColorSpec::new().set_fg(Some(termcolor::Color::Cyan)))
-        .unwrap();
-    stdout.write_all(WELCOME_INFO.as_bytes()).unwrap();
-    stdout.write_all(b"\n").unwrap();
-    stdout.reset().unwrap();
-    stdout.flush().unwrap();
+enum Event {
+    Log(String),
+}
 
-    drop(stdout);
+static mut SENDER: MaybeUninit<mpsc::Sender<Event>> = MaybeUninit::uninit();
+
+fn main() {
+    let (tx, rx) = mpsc::channel::<Event>();
+    unsafe {
+        SENDER.write(tx);
+    }
+    thread::spawn(move || {
+        for event in rx {
+            match event {
+                Event::Log(s) => {
+                    let mut stdout = StandardStream::stdout(ColorChoice::Auto);
+                    stdout
+                        .set_color(&ColorSpec::new().set_fg(Some(termcolor::Color::Cyan)))
+                        .unwrap();
+                    stdout.write_all(s.as_bytes()).unwrap();
+                    stdout.reset().unwrap();
+                    stdout.flush().unwrap();
+                }
+            }
+        }
+    });
+
+    log!("{}", WELCOME_INFO);
 
     let p = Path::new("QQ.exe");
 
@@ -140,13 +172,6 @@ fn main() {
 
                         match info.ExceptionRecord.ExceptionCode {
                             EXCEPTION_BREAKPOINT => {
-                                println!(
-                                    "[NTHook][PID: {}][TID: {}][Address: {:p}] Breakpoint",
-                                    event.dwProcessId,
-                                    event.dwThreadId,
-                                    info.ExceptionRecord.ExceptionAddress
-                                );
-
                                 break 'cs break_table
                                     .get(&(info.ExceptionRecord.ExceptionAddress as usize))
                                     .map(|f| {
@@ -156,7 +181,15 @@ fn main() {
                                             thread,
                                         })
                                     })
-                                    .unwrap_or(DBG_EXCEPTION_NOT_HANDLED);
+                                    .unwrap_or_else(|| {
+                                        log!(
+                                    "[NTHook][PID: {}][TID: {}][Address: {:p}] Unknown breakpoint",
+                                    event.dwProcessId,
+                                    event.dwThreadId,
+                                    info.ExceptionRecord.ExceptionAddress
+                                );
+                                        DBG_EXCEPTION_NOT_HANDLED
+                                    });
                             }
                             _ => {}
                         }
@@ -195,10 +228,59 @@ fn main() {
 
                             match p.file_name().unwrap().to_str().unwrap() {
                                 "wrapper.node" => {
-                                    println!("[PID: {}][LoadDLL] wrapper.node", event.dwProcessId);
+                                    log!("[PID: {}][LoadDLL] wrapper.node", event.dwProcessId);
+                                    // nop replace
+                                    let offsets = [0x22b5f6f, 0x1df46bf];
+
+                                    for offset in offsets {
+                                        let mut buf_byte = [0u8; 1];
+
+                                        let addr = info.lpBaseOfDll.offset(offset);
+                                        wrap(|| {
+                                            ReadProcessMemory(
+                                                process,
+                                                addr,
+                                                buf_byte.as_mut_ptr() as _,
+                                                1,
+                                                &mut common_len,
+                                            )
+                                        })
+                                        .unwrap();
+
+                                        let [byte] = buf_byte;
+
+                                        if byte == 0x90 {
+                                            log!(
+                                                "[NTHook] set breakpoint {:p} in wrapper.node",
+                                                addr
+                                            );
+
+                                            break_table.insert(addr as usize, get_log);
+
+                                            //buf_byte = 0xCC;
+                                            buf_byte = [0xCC];
+
+                                            wrap(|| {
+                                                WriteProcessMemory(
+                                                    process,
+                                                    addr,
+                                                    buf_byte.as_ptr() as _,
+                                                    1,
+                                                    &mut common_len,
+                                                )
+                                            })
+                                            .unwrap();
+                                        } else {
+                                            panic!(
+                                                "unable to set breakpoint in wrapper.node at 0x22b5f6f"
+                                            );
+                                        }
+                                    }
+
+                                    let offset = 0x1e0d443;
                                     let mut buf_byte = [0u8; 1];
 
-                                    let addr = info.lpBaseOfDll.offset(OFFSET);
+                                    let addr = info.lpBaseOfDll.offset(offset);
                                     wrap(|| {
                                         ReadProcessMemory(
                                             process,
@@ -213,12 +295,9 @@ fn main() {
                                     let [byte] = buf_byte;
 
                                     if byte == 0x90 {
-                                        println!(
-                                            "[NTHook] set breakpoint {:p} in wrapper.node",
-                                            addr
-                                        );
+                                        log!("[NTHook] set breakpoint {:p} in wrapper.node", addr);
 
-                                        break_table.insert(addr as usize, get_log);
+                                        break_table.insert(addr as usize, get_log_r14);
 
                                         //buf_byte = 0xCC;
                                         buf_byte = [0xCC];
@@ -238,6 +317,52 @@ fn main() {
                                             "unable to set breakpoint in wrapper.node at 0x22b5f6f"
                                         );
                                     }
+                                    /*
+                                    // ret replace
+                                    let offsets = [0x23a60f8];
+
+                                    for offset in offsets {
+                                        let mut buf_byte = [0u8; 2];
+
+                                        let addr = info.lpBaseOfDll.offset(offset);
+                                        wrap(|| {
+                                            ReadProcessMemory(
+                                                process,
+                                                addr,
+                                                buf_byte.as_mut_ptr() as _,
+                                                2,
+                                                &mut common_len,
+                                            )
+                                        })
+                                            .unwrap();
+
+                                        if buf_byte == [0xC3, 0xCC] {
+                                            log!(
+                                                "[NTHook] set breakpoint {:p} in wrapper.node",
+                                                addr
+                                            );
+
+                                            break_table.insert(addr as usize, nop);
+
+                                            //buf_byte = 0xCC;
+                                            buf_byte = [0xCC, 0xC3];
+
+                                            wrap(|| {
+                                                WriteProcessMemory(
+                                                    process,
+                                                    addr,
+                                                    buf_byte.as_ptr() as _,
+                                                    2,
+                                                    &mut common_len,
+                                                )
+                                            })
+                                                .unwrap();
+                                        } else {
+                                            panic!(
+                                                "unable to set breakpoint in wrapper.node at 0x22b5f6f"
+                                            );
+                                        }
+                                    }*/
                                 }
                                 _ => {}
                             }
@@ -248,7 +373,7 @@ fn main() {
                     CREATE_PROCESS_DEBUG_EVENT => {
                         let info = event.u.CreateProcessInfo();
 
-                        println!(
+                        log!(
                             "[NTHook][PID: {}] Process {} created.",
                             event.dwProcessId,
                             GetProcessId(info.hProcess)
@@ -258,13 +383,14 @@ fn main() {
                     }
                     EXIT_PROCESS_DEBUG_EVENT => {
                         let info = event.u.ExitProcess();
-                        println!(
+                        log!(
                             "[NTHook][PID: {}] Process exit, ExitCode = 0x{:X}",
-                            event.dwProcessId, info.dwExitCode
+                            event.dwProcessId,
+                            info.dwExitCode
                         );
 
                         if event.dwProcessId == dbg_process_info.dwProcessId {
-                            println!("[NTHoo] Main process killed, stop.");
+                            log!("[NTHoo] Main process killed, stop.");
                             std::process::exit(info.dwExitCode as _);
                         }
 
@@ -280,6 +406,133 @@ fn main() {
             wrap(|| ContinueDebugEvent(event.dwProcessId, event.dwThreadId, cs)).unwrap();
         }
     }
+}
+
+unsafe fn get_log_r15(
+    DebugInfo {
+        exception: _,
+        process,
+        thread,
+    }: DebugInfo,
+) -> DWORD {
+    let mut ctx = CONTEXT::default();
+    ctx.ContextFlags = CONTEXT_FULL;
+
+    wrap(|| GetThreadContext(thread, &mut ctx)).unwrap();
+
+    let addr = ctx.R15;
+    if addr != 0 {
+        let mut read = 0;
+        let mut ptr = 0usize;
+
+        wrap(|| {
+            ReadProcessMemory(
+                process,
+                addr as _,
+                (&mut ptr) as *mut usize as _,
+                size_of::<usize>(),
+                &mut read,
+            )
+        })
+        .unwrap();
+
+        let mut buf = [0; 1024];
+
+        let _ = wrap(|| {
+            ReadProcessMemory(
+                process,
+                ptr as _,
+                buf.as_mut_ptr() as _,
+                size_of_val(&buf),
+                &mut read,
+            )
+        });
+
+        log!(
+            "[NTHook-Log] {}",
+            CStr::from_bytes_until_nul(&buf).unwrap().to_str().unwrap()
+        );
+    }
+
+    DBG_EXCEPTION_HANDLED
+}
+
+unsafe fn get_log_r14(
+    DebugInfo {
+        exception: _,
+        process,
+        thread,
+    }: DebugInfo,
+) -> DWORD {
+    let mut ctx = CONTEXT::default();
+    ctx.ContextFlags = CONTEXT_FULL;
+
+    wrap(|| GetThreadContext(thread, &mut ctx)).unwrap();
+
+    let addr = ctx.R14;
+    if addr != 0 {
+        let mut read = 0;
+        let mut buf = [0u8; 8192];
+
+        let _ = wrap(|| {
+            ReadProcessMemory(
+                process,
+                addr as _,
+                buf.as_mut_ptr() as _,
+                buf.len(),
+                &mut read,
+            )
+        });
+
+        let mut heap;
+
+        let str = if let Some(idx) = memchr::memchr(0, &buf) {
+            String::from_utf8_lossy(&buf[..idx])
+        } else {
+            let mut len = buf.len();
+            heap = Vec::<u8>::with_capacity(buf.len() << 1);
+            heap.extend_from_slice(&buf);
+
+            loop {
+                if wrap(|| {
+                    ReadProcessMemory(
+                        process,
+                        (addr as usize + len) as _,
+                        buf.as_mut_ptr() as _,
+                        buf.len(),
+                        &mut read,
+                    )
+                })
+                .is_err()
+                {
+                    break;
+                }
+
+                heap.extend_from_slice(&buf);
+
+                match memchr::memchr(0, &buf) {
+                    Some(idx) => {
+                        len += idx;
+                        break;
+                    }
+                    None => len += buf.len(),
+                }
+            }
+
+            heap.truncate(len);
+            String::from_utf8_lossy(&heap)
+        };
+
+        log!("[NTHook-Log] {}", str);
+
+        /*if let Ok(cstr) = CStr::from_bytes_until_nul(&buf) {
+            log!("[NTHook-Log] {}",cstr.to_str().unwrap());
+        } else {
+            log!("[NTHook-Log] Buffer = {:?}", buf);
+        }*/
+    }
+
+    DBG_EXCEPTION_HANDLED
 }
 
 unsafe fn get_log(
@@ -322,22 +575,16 @@ unsafe fn get_log(
             )
         });
 
-        let mut stdout = StandardStream::stdout(ColorChoice::Auto);
-        stdout
-            .set_color(&ColorSpec::new().set_fg(Some(termcolor::Color::Cyan)))
-            .unwrap();
-
-        writeln!(
-            stdout,
+        log!(
             "[NTHook-Log] {}",
             CStr::from_bytes_until_nul(&buf).unwrap().to_str().unwrap()
-        )
-        .unwrap();
-
-        stdout.reset().unwrap();
-        stdout.flush().unwrap();
+        );
     }
 
+    DBG_EXCEPTION_HANDLED
+}
+
+unsafe fn nop(_: DebugInfo) -> DWORD {
     DBG_EXCEPTION_HANDLED
 }
 
