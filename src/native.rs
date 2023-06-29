@@ -1,3 +1,5 @@
+#![allow(non_snake_case)]
+
 use winapi::shared::minwindef::{BOOL, DWORD, WORD};
 use winapi::um::winnt::{CONTEXT_u, HANDLE, M128A};
 

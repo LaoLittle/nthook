@@ -12,7 +12,7 @@ use std::path::Path;
 use std::ptr::{null, null_mut};
 use std::{fs, io};
 use termcolor::{ColorChoice, ColorSpec, StandardStream, WriteColor};
-use winapi::shared::minwindef::{BOOL, DWORD, FALSE, MAX_PATH, WORD};
+use winapi::shared::minwindef::{DWORD, FALSE, MAX_PATH};
 use winapi::um::debugapi::{ContinueDebugEvent, WaitForDebugEvent};
 
 use winapi::um::handleapi::CloseHandle;
@@ -27,10 +27,9 @@ use winapi::um::psapi::GetMappedFileNameW;
 
 use winapi::um::winbase::{lstrlenW, DEBUG_PROCESS, INFINITE};
 use winapi::um::wincon::SetConsoleOutputCP;
-use winapi::um::winnt::{CONTEXT_u, CONTEXT_FULL, DBG_EXCEPTION_NOT_HANDLED, M128A};
+use winapi::um::winnt::{CONTEXT_FULL, DBG_EXCEPTION_NOT_HANDLED};
 use winapi::um::winnt::{
     DBG_CONTINUE, DBG_EXCEPTION_HANDLED, HANDLE, PROCESS_ALL_ACCESS, THREAD_ALL_ACCESS,
-    THREAD_GET_CONTEXT,
 };
 
 const WELCOME_INFO: &str = include_str!("../resources/welcome_info");
@@ -38,6 +37,7 @@ const MAX_PATH_BUF_SIZE: usize = MAX_PATH + 1;
 
 const OFFSET: isize = 0x22b5f6f;
 
+#[repr(C)]
 struct DebugInfo {
     exception: EXCEPTION_DEBUG_INFO,
     process: HANDLE,
@@ -164,11 +164,10 @@ fn main() {
                         DBG_EXCEPTION_NOT_HANDLED
                     }
                     LOAD_DLL_DEBUG_EVENT => {
-                        //println!("Recv: {:?}, code={}", event.dwProcessId, event.dwDebugEventCode);
                         let info = event.u.LoadDll();
 
                         if !info.lpBaseOfDll.is_null() {
-                            let mut buf = [0u8; MAX_PATH];
+                            let mut buf = [0u8; MAX_PATH_BUF_SIZE];
 
                             let mut common_len = 0;
 
@@ -176,7 +175,7 @@ fn main() {
                                 process,
                                 info.lpBaseOfDll,
                                 buf.as_mut_ptr() as _,
-                                MAX_PATH as _,
+                                MAX_PATH_BUF_SIZE as DWORD,
                             );
                             let len = lstrlenW(buf.as_ptr() as _);
 
@@ -194,45 +193,53 @@ fn main() {
 
                             //println!("[PID: {}][LoadDLL] {}", event.dwProcessId, p.file_name().unwrap().to_str().unwrap());
 
-                            if p.file_name().unwrap().to_str().unwrap() == "wrapper.node" {
-                                println!("[PID: {}][LoadDLL] wrapper.node", event.dwProcessId);
-                                let mut buf_byte = [0u8; 1];
+                            match p.file_name().unwrap().to_str().unwrap() {
+                                "wrapper.node" => {
+                                    println!("[PID: {}][LoadDLL] wrapper.node", event.dwProcessId);
+                                    let mut buf_byte = [0u8; 1];
 
-                                let addr = info.lpBaseOfDll.offset(OFFSET);
-                                wrap(|| {
-                                    ReadProcessMemory(
-                                        process,
-                                        addr,
-                                        buf_byte.as_mut_ptr() as _,
-                                        1,
-                                        &mut common_len,
-                                    )
-                                })
-                                .unwrap();
-
-                                let [byte] = buf_byte;
-
-                                if byte == 0x90 {
-                                    println!("[NTHook] set breakpoint {:p} in wrapper.node", addr);
-
-                                    break_table.insert(addr as usize, get_log);
-
-                                    //buf_byte = 0xCC;
-                                    buf_byte = [0xCC];
-
+                                    let addr = info.lpBaseOfDll.offset(OFFSET);
                                     wrap(|| {
-                                        WriteProcessMemory(
+                                        ReadProcessMemory(
                                             process,
                                             addr,
-                                            buf_byte.as_ptr() as _,
+                                            buf_byte.as_mut_ptr() as _,
                                             1,
                                             &mut common_len,
                                         )
                                     })
                                     .unwrap();
-                                } else {
-                                    panic!("unable to set breakpoint in wrapper.node at 0x22b5f6f");
+
+                                    let [byte] = buf_byte;
+
+                                    if byte == 0x90 {
+                                        println!(
+                                            "[NTHook] set breakpoint {:p} in wrapper.node",
+                                            addr
+                                        );
+
+                                        break_table.insert(addr as usize, get_log);
+
+                                        //buf_byte = 0xCC;
+                                        buf_byte = [0xCC];
+
+                                        wrap(|| {
+                                            WriteProcessMemory(
+                                                process,
+                                                addr,
+                                                buf_byte.as_ptr() as _,
+                                                1,
+                                                &mut common_len,
+                                            )
+                                        })
+                                        .unwrap();
+                                    } else {
+                                        panic!(
+                                            "unable to set breakpoint in wrapper.node at 0x22b5f6f"
+                                        );
+                                    }
                                 }
+                                _ => {}
                             }
                         }
 
